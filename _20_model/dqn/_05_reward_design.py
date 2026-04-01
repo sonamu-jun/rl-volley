@@ -150,10 +150,10 @@ def calculate_reward(materials):
     reward += SCALE_MATCH_WIN_BONUS * mat["match_won"]
 
     # Normalize Reward to 0~1 with a Fixed Reward Window
-    REWARD_NORMALIZE_MIN = -100.0
-    REWARD_NORMALIZE_MAX = 100.0
-    reward = normalize_minmax(
-        reward, REWARD_NORMALIZE_MIN, REWARD_NORMALIZE_MAX)
+    # REWARD_NORMALIZE_MIN = -100.0
+    # REWARD_NORMALIZE_MAX = 100.0
+    # reward = normalize_minmax(
+    #     reward, REWARD_NORMALIZE_MIN, REWARD_NORMALIZE_MAX)
 
     # Return Calculated Reward
     return reward

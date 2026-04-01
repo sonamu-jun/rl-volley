@@ -1,10 +1,10 @@
 # Import Required External Libraries
 import os
+import random
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 
 # Import Required Internal Libraries
@@ -28,16 +28,11 @@ class ReplayDataset(Dataset):
             torch.as_tensor(action, dtype=torch.float32)).item())
         self.transitions.append(
             (
-                torch.as_tensor(
-                    state, dtype=torch.float32, device=self.device),
-                torch.tensor(
-                    [action_idx], dtype=torch.long, device=self.device),
-                torch.tensor(
-                    float(reward), dtype=torch.float32, device=self.device),
-                torch.as_tensor(
-                    state_next, dtype=torch.float32, device=self.device),
-                torch.tensor(
-                    float(done), dtype=torch.float32, device=self.device),
+                torch.as_tensor(state, dtype=torch.float32),
+                torch.tensor([action_idx], dtype=torch.long),
+                torch.tensor(float(reward), dtype=torch.float32),
+                torch.as_tensor(state_next, dtype=torch.float32),
+                torch.tensor(float(done), dtype=torch.float32),
             )
         )
 
@@ -75,8 +70,9 @@ class Dqn:
         self.gamma = float(self.train_conf["gamma"])
 
         # - Device for Training
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
+        # self.device = torch.device(
+        #     "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
 
         # - Learning Rate for Training Networks
         self.learning_rate = float(self.train_conf["learning_rate"])
@@ -102,6 +98,9 @@ class Dqn:
         self.training_steps_init = int(self.train_conf["training_steps_init"])
         self.training_steps = self.training_steps_init
         self.loss_function = nn.MSELoss()
+
+        self.update_every = int(self.train_conf["update_every"])
+        self.env_steps = 0
 
         """================================================================================================
         ## Load Target Policy
@@ -186,16 +185,22 @@ class Dqn:
         # - Skip Update Until Replay Buffer is Warmed Up
         if len(self.replay_buffer) < self.replay_start_size:
             return
+    
+        if self.env_steps % self.update_every != 0:
+            self.env_steps += 1
+            return
+        self.env_steps += 1
 
         # - Build Replay DataLoader
-        replay_loader = DataLoader(
-            self.replay_buffer,
-            batch_size=min(self.batch_size, len(self.replay_buffer)),
-            shuffle=True,
-        )
+        batch_size = min(self.batch_size, len(self.replay_buffer))
+        batch = random.sample(self.replay_buffer.transitions, batch_size)
 
-        states, actions, rewards, states_next, dones = \
-            next(iter(replay_loader))
+        states, actions, rewards, states_next, dones = zip(*batch)
+        states = torch.stack(states).to(self.device)
+        actions = torch.stack(actions).to(self.device)
+        rewards = torch.stack(rewards).to(self.device)
+        states_next = torch.stack(states_next).to(self.device)
+        dones = torch.stack(dones).to(self.device)
 
         # - Calculate Predicted Q-Values
         qvalues = self.policy(states).gather(1, actions).squeeze(1)
@@ -212,9 +217,10 @@ class Dqn:
         self.optimizer.step()
 
         # - Synchronize Target Network Periodically
-        self.training_steps += 1
         if self.training_steps % self.target_update_interval == 0:
             self.target_policy.load_state_dict(self.policy.state_dict())
+
+        self.training_steps += 1
 
     def get_train_configuration(self):
         train_conf = dqn._01_params.get_train_params()

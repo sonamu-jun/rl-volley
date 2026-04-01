@@ -17,18 +17,25 @@ def epsilon_greedy_action_selection(policy, state, epsilon):
 
     # - Load Q-Vector for Current State
     with torch.no_grad():
-        q_vector = policy(state_tensor).squeeze(0).detach().cpu().numpy()
+        q_vector = policy(state_tensor).squeeze(0)
     dim_action = int(q_vector.shape[0])
 
     # - If Random Value is Less than Epsilon, Select a Random Action
     if np.random.rand() < float(epsilon):
-        action_idx = int(np.random.choice(range(dim_action), 1)[0])
+        action_idx = int(torch.randint(dim_action, (1,)).item())
 
     # - Otherwise, Select an Action with the Highest Q-Value
     else:
-        max_value = float(np.max(q_vector))
-        candidate_indexes = np.flatnonzero(q_vector == max_value)
-        action_idx = int(np.random.choice(candidate_indexes, 1)[0])
+        max_value = torch.max(q_vector)
+        candidate_indexes = torch.nonzero(
+            q_vector == max_value, as_tuple=False).flatten()
+        random_idx = torch.randint(
+            low=0,
+            high=candidate_indexes.numel(),
+            size=(1,),
+            device=candidate_indexes.device,
+        )
+        action_idx = int(candidate_indexes[random_idx].item())
 
     # - Convert the Action Index to One-Hot Action Vector
     action = np.zeros(dim_action, dtype=np.float32)
