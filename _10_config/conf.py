@@ -36,8 +36,8 @@ class Config:
         self.num_episode = 100
 
         # Black & White Mode
-        BNW_MODE = False
-        BNW_MODE_PW = 3011
+        BNW_MODE = True
+        BNW_MODE_PW = 'asdasdsd'
 
         """====================================================================================================
         ## Configuration for Path
