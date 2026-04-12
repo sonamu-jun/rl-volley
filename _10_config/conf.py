@@ -25,7 +25,7 @@ class Config:
         self.random_serve = True
 
         # - Set the Random Seed for Reproducibility
-        self.seed = 100
+        self.seed = None
 
         # Set the Train Player and Opponent for Training Mode
         self.train_algorithm = 'qlearning'
@@ -36,8 +36,8 @@ class Config:
         self.num_episode = 100
 
         # Black & White Mode
-        BNW_MODE = True
-        BNW_MODE_PW = 'eklrmklasd'
+        BNW_MODE = False
+        BNW_MODE_PW = 3011
 
         """====================================================================================================
         ## Configuration for Path

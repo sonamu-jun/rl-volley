@@ -16,6 +16,7 @@ from .actions import build_user_input
 from .actions import describe_user_input
 from .actions import select_action_name
 from .constants import GROUND_HALF_WIDTH
+from .constants import PLAYER_TOUCHING_GROUND_Y_COORD
 from .engine import Engine
 from .input import UserInput
 from .state import build_training_state_bundle
@@ -150,8 +151,9 @@ class Env:
         self.render_mode = render_mode
         self.is_log_mode = render_mode == "log"
         self.target_score = target_score
-        self.seed = seed
+        self.seed = self._normalize_seed(seed)
         self.randomize_serve_on_reset = randomize_serve_on_reset
+        self.randomize_serve_enabled = bool(randomize_serve_on_reset)
         self.rally_step_limit = rally_step_limit
         self.point_pause_frames = 4
 
@@ -206,6 +208,27 @@ class Env:
             self.engine.seed(self.seed)
 
         self.reset(return_state=False)
+
+    def _normalize_seed(self, seed):
+        if seed is None:
+            return None
+        if isinstance(seed, str):
+            normalized_seed = seed.strip()
+            if normalized_seed == "" or normalized_seed.lower() == "none":
+                return None
+            return int(normalized_seed)
+        return int(seed)
+
+    def _set_next_serve_side(self, scorer=None):
+        if self.randomize_serve_enabled:
+            self.is_player2_serve = bool(random.randrange(0, 2))
+            return
+
+        if scorer is None:
+            self.is_player2_serve = False
+            return
+
+        self.is_player2_serve = scorer == "player2"
 
     def _invalidate_cached_state(self):
         self.state_cache = None
@@ -409,10 +432,8 @@ class Env:
         if randomize_serve is None:
             randomize_serve = self.randomize_serve_on_reset
 
-        if randomize_serve:
-            self.is_player2_serve = bool(random.randrange(0, 2))
-        else:
-            self.is_player2_serve = False
+        self.randomize_serve_enabled = bool(randomize_serve)
+        self._set_next_serve_side()
 
         self.match_done = False
         self.compat_state_player = "player1"
@@ -480,6 +501,24 @@ class Env:
         if self.scores["player2"] > self.scores["player1"]:
             return "PLAYER 2 WIN"
         return "DRAW"
+
+    def _set_match_end_player_states(self):
+        winner_name = None
+        if self.scores["player1"] > self.scores["player2"]:
+            winner_name = "player1"
+        elif self.scores["player2"] > self.scores["player1"]:
+            winner_name = "player2"
+
+        for player_id, player_name in enumerate(("player1", "player2")):
+            player = self.engine.players[player_id]
+            player.game_ended = True
+            player.is_winner = winner_name == player_name
+            player.state = 5 if player.is_winner else 6
+            player.frame_number = 0
+            player.delay_before_next_frame = 0
+            player.lying_down_duration_left = -1
+            player.y = PLAYER_TOUCHING_GROUND_Y_COORD
+            player.y_velocity = 0
 
     def _clone_events(self, events):
         if events is None:
@@ -1359,11 +1398,11 @@ class Env:
             if self.engine.ball.punch_effect_x > GROUND_HALF_WIDTH:
                 scorer = "player1"
                 loser = "player2"
-                self.is_player2_serve = False
             else:
                 scorer = "player2"
                 loser = "player1"
-                self.is_player2_serve = True
+
+            self._set_next_serve_side(scorer=scorer)
 
             self.scores[scorer] += 1
             rewards[scorer] = 10.0
@@ -1372,6 +1411,7 @@ class Env:
 
             if self.scores[scorer] >= self.target_score:
                 self.match_done = True
+                self._set_match_end_player_states()
             else:
                 self._pause_after_point()
                 self._reset_rally(clear_flags=False)
@@ -1385,6 +1425,7 @@ class Env:
             self.rally_done = True
             self.match_done = True
             events["timeout"] = True
+            self._set_match_end_player_states()
 
         if self.engine.viewer is not None and (not self.rally_done or self.match_done):
             self._refresh_viewer()

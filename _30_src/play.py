@@ -21,7 +21,10 @@ def run(conf):
     env.set(player1=model_1p, player2=model_2p, random_serve=conf.random_serve)
 
     # - Wait for 's' key to Start Episode
-    env.wait_key_for_start(key=ord('s'))
+    command = env.wait_key_for_start(key=ord('s'))
+    if command == "quit":
+        env.close()
+        return
 
     # - Run Episode
     while True:
@@ -38,12 +41,24 @@ def run(conf):
             break
 
         if done is True:
+            if score['p1'] > score['p2']:
+                winner_text = 'player1'
+            elif score['p2'] > score['p1']:
+                winner_text = 'player2'
+            else:
+                winner_text = 'draw'
+
             # - Print Winner and Final Score
-            print("winner: {}"
-                  .format('player1' if score['p1'] > score['p2'] else 'player2'))
+            print("winner: {}".format(winner_text))
             print(f"final score: {score['p1']}:{score['p2']}")
 
-            # - Escape Loop to Terminate Episode
+            command = env.wait_for_command(allow_restart=True)
+            if command == "restart":
+                env.set(player1=model_1p, player2=model_2p, random_serve=conf.random_serve)
+                command = env.wait_key_for_start(key=ord('s'))
+                if command == "quit":
+                    break
+                continue
             break
 
     # - Terminate Episode and Close Environment

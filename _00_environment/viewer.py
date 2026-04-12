@@ -17,6 +17,7 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "hide")
 
 import pygame
 
+from .audio import ViewerAudio
 from .constants import GROUND_HALF_WIDTH
 from .constants import GROUND_HEIGHT
 from .constants import GROUND_WIDTH
@@ -85,6 +86,9 @@ class Viewer:
 
         self.engine = engine
         self.bnw_mode, self.bnw_mode_password = load_bnw_config()
+        self.audio_enabled_by_config = (
+            not self.bnw_mode and str(self.bnw_mode_password) == "301"
+        )
         self.bnw_code_buffer = ""
         self.headless = True
         self.closed_requested = False
@@ -116,6 +120,15 @@ class Viewer:
             (GROUND_WIDTH, GROUND_HEIGHT), pygame.SRCALPHA
         )
         self.ball_punch_cache = {}
+        self.audio = None
+        self.current_score = None
+        self.game_end_animation_frame = 0
+        self.last_player_states = {
+            "player1": int(engine.players[0].state),
+            "player2": int(engine.players[1].state),
+        }
+        self.last_power_hit_active = False
+        self.last_ground_effect_signature = None
 
         self.ball_images = []
         self.player_images = []
@@ -141,6 +154,7 @@ class Viewer:
             (HUMAN_DISPLAY_WIDTH, HUMAN_DISPLAY_HEIGHT)
         )
         self.headless = False
+        self._ensure_audio()
         self.screen = self.screen.convert()
         self.background = self.background.convert()
         self.overlay_surface = self.overlay_surface.convert_alpha()
@@ -167,6 +181,27 @@ class Viewer:
         self.pressed_keys.clear()
         self.bnw_code_buffer = ""
 
+    def _ensure_audio(self):
+        if self.audio is not None:
+            return
+
+        self.audio = ViewerAudio(enabled=self.audio_enabled_by_config)
+        if self.audio_enabled_by_config and not self.audio.available:
+            if self.audio.assets_found:
+                print(f"[audio] disabled: mixer init failed ({self.audio.init_error})")
+            return
+
+        self.audio.play_bgm()
+        if self.audio_enabled_by_config:
+            bgm_name = self.audio.bgm_path.name if self.audio.bgm_path is not None else "-"
+            loaded_effects = ",".join(self.audio.loaded_effect_names) if self.audio.loaded_effect_names else "-"
+            driver_name = self.audio.audio_driver or "default"
+            print(
+                f"[audio] enabled: driver={driver_name} bgm={bgm_name} effects={loaded_effects}"
+            )
+        if self.audio_enabled_by_config and self.audio.init_error:
+            print(f"[audio] warning: {self.audio.init_error}")
+
     def set_human_controllers(self, player1_human, player2_human):
         self.human_controllers["player1"] = bool(player1_human)
         self.human_controllers["player2"] = bool(player2_human)
@@ -184,16 +219,21 @@ class Viewer:
         return "  ".join(hints)
 
     def set_match_status(self, player1_score, player2_score, winner_text, command_text=None):
+        previous_winner_text = self.status_text
+        self.current_score = (int(player1_score), int(player2_score))
         self.score_text = f"{player1_score} : {player2_score}"
         if winner_text is None:
             self.status_text = ""
             self.status_command_text = ""
+            self.game_end_animation_frame = 0
         else:
             self.status_text = winner_text
             if command_text is None:
                 self.status_command_text = "Q quit  C restart"
             else:
                 self.status_command_text = str(command_text)
+            if winner_text != previous_winner_text and self._is_game_end_status():
+                self.game_end_animation_frame = 0
         self.overlay_dirty = True
 
     def set_player_labels(self, player1_title, player1_detail, player2_title, player2_detail):
@@ -216,6 +256,26 @@ class Viewer:
         text_surface = font.render(text, True, color)
         text_rect = text_surface.get_rect(center=(x_value, y_value))
         target_surface.blit(text_surface, text_rect)
+
+    def _draw_scaled_text(self, target_surface, text, font, center_x, center_y, color, scale):
+        text_surface = font.render(text, True, color)
+        if abs(scale - 1.0) > 0.01:
+            scaled_width = max(1, int(text_surface.get_width() * scale))
+            scaled_height = max(1, int(text_surface.get_height() * scale))
+            text_surface = pygame.transform.smoothscale(
+                text_surface,
+                (scaled_width, scaled_height),
+            )
+        text_rect = text_surface.get_rect(center=(center_x, center_y))
+        target_surface.blit(text_surface, text_rect)
+
+    def _is_game_end_status(self):
+        return self.status_text in {"PLAYER 1 WIN", "PLAYER 2 WIN", "DRAW"}
+
+    def _get_display_frame_number(self, player):
+        if getattr(player, "game_ended", False) and int(player.state) in (5, 6):
+            return min(self.game_end_animation_frame // 6, 4)
+        return int(player.frame_number)
 
     def _draw_player_label(self, target_surface, player_key, center_x, title_color):
         label = self.player_labels[player_key]
@@ -578,6 +638,38 @@ class Viewer:
         x_value = int(player.x)
         y_value = int(player.y)
         color = (0, 0, 0)
+        display_frame = self._get_display_frame_number(player)
+
+        if player.state == 5:
+            sway = (display_frame % 2) * 2
+            head_center = (x_value, y_value - 22)
+            hip_y = y_value + 4
+            pygame.draw.circle(self.screen, color, head_center, 7, 2)
+            pygame.draw.arc(
+                self.screen,
+                color,
+                (head_center[0] - 4, head_center[1] + 1, 8, 5),
+                0.2,
+                math.pi - 0.2,
+                1,
+            )
+            pygame.draw.line(self.screen, color, (x_value, y_value - 13), (x_value, hip_y), 2)
+            pygame.draw.line(self.screen, color, (x_value, hip_y), (x_value - 9, y_value + 20), 2)
+            pygame.draw.line(self.screen, color, (x_value, hip_y), (x_value + 9, y_value + 20), 2)
+            pygame.draw.line(self.screen, color, (x_value, y_value - 8), (x_value - 10 - sway, y_value - 20), 2)
+            pygame.draw.line(self.screen, color, (x_value, y_value - 8), (x_value + 10 + sway, y_value - 20), 2)
+            return
+
+        if player.state == 6:
+            slump = display_frame
+            head_center = (x_value - 3, y_value - 10 + slump)
+            pygame.draw.circle(self.screen, color, head_center, 6, 2)
+            pygame.draw.line(self.screen, color, (x_value, y_value - 4), (x_value + 6, y_value + 10), 2)
+            pygame.draw.line(self.screen, color, (x_value + 6, y_value + 10), (x_value - 4, y_value + 18), 2)
+            pygame.draw.line(self.screen, color, (x_value + 6, y_value + 10), (x_value + 14, y_value + 18), 2)
+            pygame.draw.line(self.screen, color, (x_value + 2, y_value + 1), (x_value - 8, y_value + 6), 2)
+            pygame.draw.line(self.screen, color, (x_value + 5, y_value + 4), (x_value + 14, y_value + 8), 2)
+            return
 
         if player.state in (3, 4):
             direction = player.diving_direction
@@ -711,7 +803,33 @@ class Viewer:
             )
             quit_text = self._quit_key_text()
             control_hint = self._control_hint_text()
-            if self.status_text:
+            if self._is_game_end_status():
+                banner_progress = min(self.game_end_animation_frame, 50)
+                banner_scale = 1.0 + (4.0 * (50 - banner_progress) / 50.0)
+                self._draw_scaled_text(
+                    self.overlay_surface,
+                    "GAME END",
+                    self.large_font,
+                    GROUND_WIDTH // 2,
+                    76,
+                    status_color,
+                    banner_scale,
+                )
+                self._draw_text(
+                    self.overlay_surface,
+                    self.status_text,
+                    self.medium_font,
+                    120,
+                    primary_color,
+                )
+                self._draw_text(
+                    self.overlay_surface,
+                    self.status_command_text,
+                    self.small_font,
+                    144,
+                    primary_color,
+                )
+            elif self.status_text:
                 status_font = self.large_font
                 if self.status_text == "PRESS S TO START":
                     status_font = self.medium_font
@@ -748,6 +866,46 @@ class Viewer:
             self.overlay_dirty = False
 
         self.screen.blit(self.overlay_surface, (0, 0))
+
+    def _update_audio_state(self):
+        if self.audio is None:
+            return
+
+        self.audio.play_bgm()
+
+        for player_key, player in (
+            ("player1", self.player1),
+            ("player2", self.player2),
+        ):
+            previous_state = self.last_player_states[player_key]
+            current_state = int(player.state)
+            if previous_state == 0 and current_state in (1, 2, 3):
+                self.audio.play_effect("jump")
+            self.last_player_states[player_key] = current_state
+
+        power_hit_active = bool(
+            self.ball.is_power_hit
+            and self.ball.punch_effect_radius > 0
+            and int(self.ball.punch_effect_y) < 260
+        )
+        if power_hit_active and not self.last_power_hit_active:
+            self.audio.play_effect("power_hit")
+        self.last_power_hit_active = power_hit_active
+
+        if (
+            self.ball.punch_effect_radius > 0
+            and int(self.ball.punch_effect_y) >= 260
+        ):
+            ground_signature = (
+                int(self.ball.punch_effect_x),
+                int(self.ball.punch_effect_y),
+                self.current_score,
+            )
+            if ground_signature != self.last_ground_effect_signature:
+                self.audio.play_effect("ball_ground")
+                self.last_ground_effect_signature = ground_signature
+        else:
+            self.last_ground_effect_signature = None
 
     def _process_events(self, allow_restart=False, allow_start=False):
         if self.headless:
@@ -805,6 +963,12 @@ class Viewer:
         return user_input, action_name
 
     def update(self):
+        if self._is_game_end_status():
+            self.game_end_animation_frame += 1
+            self.overlay_dirty = True
+
+        self._update_audio_state()
+
         if self.bnw_mode:
             self.screen.blit(self.background, (0, 0))
             self._draw_bnw_player(self.player1)
@@ -814,8 +978,10 @@ class Viewer:
             return
 
         ball_image = self.ball_images[self.ball.rotation]
-        player1_image = self.player_images[get_image_index(self.player1.state, self.player1.frame_number)]
-        player2_image = self.player_images[get_image_index(self.player2.state, self.player2.frame_number)]
+        player1_frame = self._get_display_frame_number(self.player1)
+        player2_frame = self._get_display_frame_number(self.player2)
+        player1_image = self.player_images[get_image_index(self.player1.state, player1_frame)]
+        player2_image = self.player_images[get_image_index(self.player2.state, player2_frame)]
 
         self.screen.blit(self.background, (0, 0))
         self.screen.blit(self.shadow_image, (self.player1.x - 16, 269))
@@ -824,12 +990,12 @@ class Viewer:
 
         if (self.player1.state == 3 or self.player1.state == 4) and self.player1.diving_direction == -1:
             player1_image = self.player_images_flipped[
-                get_image_index(self.player1.state, self.player1.frame_number)
+                get_image_index(self.player1.state, player1_frame)
             ]
 
         if not ((self.player2.state == 3 or self.player2.state == 4) and self.player2.diving_direction == 1):
             player2_image = self.player_images_flipped[
-                get_image_index(self.player2.state, self.player2.frame_number)
+                get_image_index(self.player2.state, player2_frame)
             ]
 
         self.screen.blit(player1_image, (self.player1.x - 32, self.player1.y - 32))
@@ -880,21 +1046,10 @@ class Viewer:
             return None
 
         while True:
-            event = pygame.event.wait()
-            if event.type == pygame.QUIT:
-                self.closed_requested = True
-                self.pending_command = "quit"
-            elif event.type == pygame.KEYDOWN:
-                self._handle_keydown(
-                    event.key,
-                    allow_restart=allow_restart,
-                    allow_start=allow_start,
-                )
-            elif event.type == pygame.KEYUP:
-                self.pressed_keys.discard(event.key)
-
             self._process_events(allow_restart=allow_restart, allow_start=allow_start)
+            self.update()
             self._present_display()
+            self.clock.tick(30)
             pygame.display.update()
             command = self.consume_command()
             if command is not None:
@@ -904,5 +1059,7 @@ class Viewer:
         return np.transpose(pygame.surfarray.array3d(self.screen), axes=(1, 0, 2))
 
     def close(self):
+        if self.audio is not None:
+            self.audio.close()
         pygame.quit()
         pygame.display.quit()
